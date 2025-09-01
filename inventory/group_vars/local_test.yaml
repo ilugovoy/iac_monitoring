@@ -1,0 +1,3 @@
+# inventory\group_vars\local_test.yaml
+---
+ansible_connection: local

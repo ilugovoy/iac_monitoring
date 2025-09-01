@@ -1,0 +1,5 @@
+# roles/eda_job_monitor/defaults/main.yml
+---
+eda_job_monitor:
+  container_prefix: "ansible-job-"          # Префикс контейнеров для мониторинга
+  check_interval_minutes: 60                # Интервал проверки

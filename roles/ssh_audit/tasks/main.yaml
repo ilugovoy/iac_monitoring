@@ -1,0 +1,127 @@
+# roles/ssh_audit/tasks/main.yml
+---
+# Проверка существования файла конфигурации
+- name: Check if sshd_config exists
+  ansible.builtin.stat:
+    path: /etc/ssh/sshd_config
+  register: sshd_config_stat
+  ignore_errors: true
+
+# Завершение выполнения при отсутствии файла
+- name: Fail if sshd_config not found
+  ansible.builtin.assert:
+    that:
+      - sshd_config_stat.stat.exists
+    fail_msg: "sshd_config not found on {{ inventory_hostname }}"
+  when: sshd_config_stat is not skipped and not ansible_check_mode
+
+# Чтение содержимого файла конфигурации
+- name: Read sshd_config
+  ansible.builtin.slurp:
+    src: /etc/ssh/sshd_config
+  register: sshd_config_content
+  when: sshd_config_stat.stat.exists
+
+# Преобразование содержимого в строки
+- name: Parse sshd_config
+  ansible.builtin.set_fact:
+    ssh_config_lines: "{{ (sshd_config_content.content | b64decode).splitlines() }}"
+  when: sshd_config_content is defined
+
+# Извлечение параметров через шаблон
+- name: Generate parsed configuration using template
+  ansible.builtin.template:
+    src: ssh_config_parser.j2
+    dest: /tmp/ssh_config_parsed_{{ inventory_hostname }}.json
+    mode: '0644'
+  when: ssh_config_lines is defined
+  delegate_to: localhost
+
+- name: Load parsed configuration
+  ansible.builtin.slurp:
+    src: /tmp/ssh_config_parsed_{{ inventory_hostname }}.json
+  register: parsed_config_result
+  when: ssh_config_lines is defined
+  delegate_to: localhost
+
+- name: Set parsed configuration variables
+  ansible.builtin.set_fact:
+    parsed_config: "{{ (parsed_config_result.content | b64decode | from_json) }}"
+  when: parsed_config_result is defined
+
+- name: Clean up temporary file
+  ansible.builtin.file:
+    path: /tmp/ssh_config_parsed_{{ inventory_hostname }}.json
+    state: absent
+  delegate_to: localhost
+  when: parsed_config_result is defined
+
+# Извлекает текущие значения проверяемых параметров из конфига
+- name: Check compliance
+  ansible.builtin.set_fact:
+    audit_result:
+      PermitRootLogin: "{{ parsed_config['PermitRootLogin'] }}"
+      PasswordAuthentication: "{{ parsed_config['PasswordAuthentication'] }}"
+      MaxAuthTries: "{{ parsed_config['MaxAuthTries'] }}"
+      ChallengeResponseAuthentication: "{{ parsed_config['ChallengeResponseAuthentication'] }}"
+      X11Forwarding: "{{ parsed_config['X11Forwarding'] }}"
+  when: parsed_config is defined
+
+# Сравнивает текущие значения с эталонными
+- name: Determine compliance status
+  ansible.builtin.set_fact:
+    is_compliant: >-
+      {{
+        (audit_result['PermitRootLogin'] == ssh_audit_config['PermitRootLogin']) and
+        (audit_result['PasswordAuthentication'] == ssh_audit_config['PasswordAuthentication']) and
+        (audit_result['MaxAuthTries'] == ssh_audit_config['MaxAuthTries']) and
+        (audit_result['ChallengeResponseAuthentication'] == ssh_audit_config['ChallengeResponseAuthentication']) and
+        (audit_result['X11Forwarding'] == ssh_audit_config['X11Forwarding'])
+      }}
+  when: audit_result is defined
+
+# Создаёт структуру лога для compliant случая
+- name: Prepare compliant log entry
+  ansible.builtin.set_fact:
+    log_entry: '"message": {"status": "compliant"}'
+  when: 
+    - is_compliant is defined
+    - is_compliant
+
+# Создаёт структуру лога для non-compliant случая
+- name: Prepare non-compliant log entry
+  ansible.builtin.set_fact:
+    log_entry_dict:
+      timestamp: "{{ ansible_date_time.iso8601 }}"
+      host: "{{ ansible_hostname }}"
+      ansible_version: "{{ ansible_version.full }}"
+      ansible_user: "{{ ansible_user_id }}"
+      message:
+        status: "non-compliant"
+        PermitRootLogin: "{{ audit_result['PermitRootLogin'] }}"
+        PasswordAuthentication: "{{ audit_result['PasswordAuthentication'] }}"
+        MaxAuthTries: "{{ audit_result['MaxAuthTries'] }}"
+        ChallengeResponseAuthentication: "{{ audit_result['ChallengeResponseAuthentication'] }}"
+        X11Forwarding: "{{ audit_result['X11Forwarding'] }}"
+  when: 
+    - audit_result is defined
+    - is_compliant is defined
+    - not is_compliant
+
+# Преобразует словарь в JSON строку для non-compliant
+- name: Convert non-compliant log entry to JSON
+  ansible.builtin.set_fact:
+    log_entry: "{{ log_entry_dict | to_json }}"
+  when: 
+    - log_entry_dict is defined
+    - log_entry is not defined
+
+# Записывает результаты аудита в лог-файл
+- name: Write audit log to file
+  ansible.builtin.copy:
+    content: "{{ log_entry }}"
+    dest: /var/log/ansible-ssh-audit.log
+    mode: '0644'
+  when: log_entry is defined
+  delegate_to: localhost
+  become: true

@@ -1,0 +1,52 @@
+# playbooks\eda_job_monitor.yml
+---
+- name: EDA Job Monitoring
+  hosts: all
+  gather_facts: true
+  
+  pre_tasks:
+    # Определяем целевого пользователя для проверки на основе дистрибутива
+    - name: Set target user
+      set_fact:
+        target_user: >-
+          {{
+            'ubuntu' if ansible_distribution == 'Ubuntu' else
+            'debian' if ansible_distribution == 'Debian' else
+            ansible_user_id
+          }}
+
+    # Отображаем информацию о системе для отладки
+    - name: Display system information
+      ansible.builtin.debug:
+        msg: "Running EDA job monitoring on {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+  roles:
+    - eda_job_monitor
+  
+  post_tasks:
+    # Проверяем существование лог-файла перед попыткой его чтения
+    - name: Check if monitoring log exists
+      ansible.builtin.stat:
+        path: /var/log/ansible-eda-monitor.log
+      register: monitor_log_stat
+      delegate_to: localhost
+
+    # Собираем содержимое лог-файла с локальной машины
+    - name: Collect monitoring results
+      ansible.builtin.slurp:
+        src: /var/log/ansible-eda-monitor.log
+      register: monitor_log
+      delegate_to: localhost
+      when: monitor_log_stat.stat.exists
+      ignore_errors: true
+
+    # Отображаем результаты мониторинга
+    - name: Display monitoring results
+      ansible.builtin.debug:
+        msg: "{{ item | from_json }}"
+      loop: "{{ (monitor_log.content | b64decode).split('\n') | select('match', '^{') | list }}"
+      when: 
+        - monitor_log is defined
+        - monitor_log.content is defined
+      delegate_to: localhost
+      ignore_errors: true

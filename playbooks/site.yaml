@@ -1,0 +1,7 @@
+# playbooks\site.yaml
+---
+- name: SSH Audit
+  import_playbook: ssh_audit.yml
+
+- name: EDA job Monitor  
+  import_playbook: eda_job_monitor.yml

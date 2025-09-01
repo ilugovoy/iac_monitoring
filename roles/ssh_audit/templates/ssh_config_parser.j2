@@ -1,0 +1,67 @@
+{% set result = {
+    'PermitRootLogin': 'yes',
+    'PasswordAuthentication': 'yes',
+    'MaxAuthTries': '6',
+    'ChallengeResponseAuthentication': 'yes',
+    'X11Forwarding': 'no'
+} %}
+
+{% for line in ssh_config_lines %}
+  {% if line.startswith('PermitRootLogin ') and line.split() | length > 1 %}
+    {% set raw_value = line.split(None, 1)[1] | trim %}
+    {% if raw_value is sameas true %}
+      {% set _ = result.update({'PermitRootLogin': 'yes'}) %}
+    {% elif raw_value is sameas false %}
+      {% set _ = result.update({'PermitRootLogin': 'no'}) %}
+    {% else %}
+      {% set _ = result.update({'PermitRootLogin': raw_value | string}) %}
+    {% endif %}
+  {% elif line.startswith('PasswordAuthentication ') and line.split() | length > 1 %}
+    {% set raw_value = line.split(None, 1)[1] | trim %}
+    {% if raw_value is sameas true %}
+      {% set _ = result.update({'PasswordAuthentication': 'yes'}) %}
+    {% elif raw_value is sameas false %}
+      {% set _ = result.update({'PasswordAuthentication': 'no'}) %}
+    {% else %}
+      {% set _ = result.update({'PasswordAuthentication': raw_value | string}) %}
+    {% endif %}
+  {% elif line.startswith('MaxAuthTries ') and line.split() | length > 1 %}
+    {% set raw_value = line.split(None, 1)[1] | trim %}
+    {% if raw_value is sameas true %}
+      {% set _ = result.update({'MaxAuthTries': 'yes'}) %}
+    {% elif raw_value is sameas false %}
+      {% set _ = result.update({'MaxAuthTries': 'no'}) %}
+    {% else %}
+      {% set _ = result.update({'MaxAuthTries': raw_value | string}) %}
+    {% endif %}
+  {% elif line.startswith('ChallengeResponseAuthentication ') and line.split() | length > 1 %}
+    {% set raw_value = line.split(None, 1)[1] | trim %}
+    {% if raw_value is sameas true %}
+      {% set _ = result.update({'ChallengeResponseAuthentication': 'yes'}) %}
+    {% elif raw_value is sameas false %}
+      {% set _ = result.update({'ChallengeResponseAuthentication': 'no'}) %}
+    {% else %}
+      {% set _ = result.update({'ChallengeResponseAuthentication': raw_value | string}) %}
+    {% endif %}
+  {% elif line.startswith('KbdInteractiveAuthentication ') and line.split() | length > 1 %}
+    {% set raw_value = line.split(None, 1)[1] | trim %}
+    {% if raw_value is sameas true %}
+      {% set _ = result.update({'ChallengeResponseAuthentication': 'yes'}) %}
+    {% elif raw_value is sameas false %}
+      {% set _ = result.update({'ChallengeResponseAuthentication': 'no'}) %}
+    {% else %}
+      {% set _ = result.update({'ChallengeResponseAuthentication': raw_value | string}) %}
+    {% endif %}
+  {% elif line.startswith('X11Forwarding ') and line.split() | length > 1 %}
+    {% set raw_value = line.split(None, 1)[1] | trim %}
+    {% if raw_value is sameas true %}
+      {% set _ = result.update({'X11Forwarding': 'yes'}) %}
+    {% elif raw_value is sameas false %}
+      {% set _ = result.update({'X11Forwarding': 'no'}) %}
+    {% else %}
+      {% set _ = result.update({'X11Forwarding': raw_value | string}) %}
+    {% endif %}
+  {% endif %}
+{% endfor %}
+
+{{ result | to_json }}

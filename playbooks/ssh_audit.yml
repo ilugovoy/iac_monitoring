@@ -1,0 +1,47 @@
+# playbooks\ssh_audit.yml
+---
+- name: SSH Configuration Audit
+  hosts: all
+  gather_facts: true
+  
+  pre_tasks:
+    # Определяем целевого пользователя для проверки на основе дистрибутива
+    - name: Set target user for audit
+      set_fact:
+        target_user: >-
+          {{
+            'ubuntu' if ansible_distribution == 'Ubuntu' else
+            'debian' if ansible_distribution == 'Debian' else
+            ansible_user_id
+          }}
+
+    # Отображаем информацию о системе для отладки
+    - name: Display system information
+      ansible.builtin.debug:
+        msg: "Running audit on {{ ansible_distribution }} {{ ansible_distribution_version }} as {{ ansible_user_id }}"
+
+  roles:
+    - ssh_audit
+
+  post_tasks:
+    # Проверяем существование лог-файла перед попыткой его чтения
+    - name: Check if audit log exists
+      ansible.builtin.stat:
+        path: /var/log/ansible-ssh-audit.log
+      register: audit_log_stat
+      delegate_to: localhost
+
+    # Собираем содержимое лог-файла с локальной машины
+    - name: Collect audit results
+      ansible.builtin.slurp:
+        src: /var/log/ansible-ssh-audit.log
+      register: audit_log
+      delegate_to: localhost
+      when: audit_log_stat.stat.exists
+      ignore_errors: true
+    
+    # Отображаем результаты аудита в удобочитаемом формате
+    - name: Display audit results
+      ansible.builtin.debug:
+        msg: "{{ audit_log.content | b64decode }}"
+      when: audit_log is defined and audit_log is not failed

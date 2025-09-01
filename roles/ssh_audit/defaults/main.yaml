@@ -1,0 +1,8 @@
+# roles/ssh_audit/defaults/main.yml
+---
+ssh_audit_config:
+  PermitRootLogin: "no"
+  PasswordAuthentication: "no"
+  MaxAuthTries: "5"
+  ChallengeResponseAuthentication: "no"
+  X11Forwarding: "no"

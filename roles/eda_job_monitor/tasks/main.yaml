@@ -1,0 +1,214 @@
+# roles/eda_job_monitor/tasks/main.yml
+---
+# Проверка доступности Podman/Docker
+- name: Check if Podman/Docker is available
+  ansible.builtin.shell: which podman || which docker
+  register: container_runtime_check
+  ignore_errors: true
+  changed_when: false
+
+# Определение команды контейнеризации
+- name: Set container runtime command
+  ansible.builtin.set_fact:
+    container_cmd: >-
+      {{
+        'podman' if ('podman' in container_runtime_check.stdout)
+        else 'docker' if ('docker' in container_runtime_check.stdout)
+        else 'unknown'
+      }}
+
+# Завершение выполнения если контейнеризация не найдена
+- name: Fail if no container runtime found
+  ansible.builtin.fail:
+    msg: "Neither Podman nor Docker found on the system"
+  when: container_cmd == 'unknown'
+
+# Получение списка всех контейнеров
+- name: Get list of containers
+  ansible.builtin.command: "{{ container_cmd }} ps -a --format json"
+  register: containers_output
+  changed_when: false
+  ignore_errors: true
+
+# Парсинг JSON ответа контейнеров
+- name: Parse containers JSON
+  ansible.builtin.set_fact:
+    containers_list: "{{ containers_output.stdout | from_json }}"
+  when: 
+    - containers_output.stdout is not none
+    - containers_output.stdout != ''
+    - containers_output.stdout != '[]'
+
+# Инициализация списка для хранения информации о job контейнерах
+- name: Initialize job containers list
+  ansible.builtin.set_fact:
+    job_containers: []
+
+# Сбор информации о job контейнерах
+- name: Collect job containers
+  ansible.builtin.set_fact:
+    job_containers: "{{ job_containers + [item] }}"
+  loop: "{{ containers_list }}"
+  when: 
+    - containers_list is defined
+    - item.Names is defined
+    - item.Names | length > 0
+    - item.Names[0] is defined
+    - item.Names[0].startswith('ansible-job-')
+
+# Инициализация списка для финальных лог-записей
+- name: Initialize final log entries
+  ansible.builtin.set_fact:
+    final_log_entries: []
+
+# Обработка каждого job контейнера
+- name: Process each job container
+  ansible.builtin.set_fact:
+    final_log_entries: >-
+      {{
+        final_log_entries + [
+          {
+            'container_name': item.Names[0],
+            'created_at': item.CreatedAt | default('unknown'),
+            'status': item.Status | default('unknown'),
+            'state': item.State | default('unknown'),
+            'started_at': item.StartedAt | default('unknown'),
+            'exited_at': item.ExitedAt | default('never')
+          }
+        ]
+      }}
+  loop: "{{ job_containers }}"
+
+# Определение статуса здоровья для каждого job
+- name: Determine health status for each job
+  ansible.builtin.set_fact:
+    job_health_status: >-
+      {{
+        job_health_status | default({}) | combine({
+          item.container_name: (
+            'healthy' if item.state == 'running'
+            else 'healthy' if (item.state == 'exited' and item.exited_at != 'never' and (ansible_date_time.epoch | int) - (item.exited_at | int) < (eda_job_monitor.check_interval_minutes * 60))
+            else 'unhealthy'
+          )
+        })
+      }}
+  loop: "{{ final_log_entries }}"
+
+# Формирование сообщения для каждого job
+- name: Generate message for each job
+  ansible.builtin.set_fact:
+    job_messages: >-
+      {{
+        job_messages | default({}) | combine({
+          item.container_name: (
+            'executed_at: ' + (item.started_at | string) if item.state == 'running'
+            else 'last_seen: ' + (item.exited_at | string) if (item.state == 'exited' and item.exited_at != 'never' and (ansible_date_time.epoch | int) - (item.exited_at | int) >= (eda_job_monitor.check_interval_minutes * 60))
+            else 'executed_at: ' + (item.exited_at | string) if (item.state == 'exited' and item.exited_at != 'never')
+            else 'last_seen: ' + (item.created_at | string)
+          )
+        })
+      }}
+  loop: "{{ final_log_entries }}"
+
+# Преобразование timestamp в читаемый формат через Python
+- name: Convert timestamps to readable format
+  ansible.builtin.shell: |
+    cat | python3 -c "
+    import json
+    import datetime
+    import sys
+
+    # Читаем JSON из stdin
+    messages = json.load(sys.stdin)
+    formatted_messages = {}
+
+    for job_name, message in messages.items():
+        if ': ' in message:
+            prefix, timestamp_str = message.split(': ', 1)
+            try:
+                if timestamp_str.isdigit() and int(timestamp_str) > 1000000000:
+                    timestamp = int(timestamp_str)
+                    formatted_time = datetime.datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    formatted_messages[job_name] = f'{prefix}: {formatted_time}'
+                else:
+                    formatted_messages[job_name] = message
+            except Exception as e:
+                formatted_messages[job_name] = message
+        else:
+            formatted_messages[job_name] = message
+
+    print(json.dumps(formatted_messages))
+    "
+  args:
+    stdin: "{{ job_messages | to_json }}"
+  register: timestamp_conversion
+  delegate_to: localhost
+  when: job_messages is defined and job_messages | length > 0
+
+# Обработка результата преобразования
+- name: Process converted timestamps
+  ansible.builtin.set_fact:
+    final_job_messages: "{{ timestamp_conversion.stdout | from_json }}"
+  when: 
+    - timestamp_conversion is defined
+    - timestamp_conversion.stdout is defined
+    - timestamp_conversion.stdout != ''
+
+# Создание отдельных лог-записей для каждого job
+- name: Create individual log entries for each job
+  ansible.builtin.set_fact:
+    individual_log_entries: >-
+      {{
+        individual_log_entries | default([]) + [
+          {
+            'timestamp': ansible_date_time.iso8601,
+            'host': ansible_hostname,
+            'ansible_version': ansible_version.full,
+            'ansible_user': ansible_user_id,
+            'message': {
+              'status': job_health_status[item],
+              'jobs': { item: final_job_messages[item] }
+            }
+          } if job_health_status[item] == 'healthy' else {
+            'message': {
+              'status': job_health_status[item],
+              'jobs': { item: final_job_messages[item] }
+            }
+          }
+        ]
+      }}
+  loop: "{{ final_job_messages | dict2items | map(attribute='key') | list }}"
+  when: final_job_messages is defined
+
+# Запись всех лог-записей в файл
+- name: Write all log entries to file
+  ansible.builtin.copy:
+    content: |
+      {% for entry in individual_log_entries %}
+      {{ entry | to_json }}
+      {% endfor %}
+    dest: /var/log/ansible-eda-monitor.log
+    mode: '0644'
+  delegate_to: localhost
+  become: true
+  when: individual_log_entries is defined and individual_log_entries | length > 0
+
+# Если нет job контейнеров, создаем запись об этом
+- name: Create entry for no job containers found
+  ansible.builtin.copy:
+    content: |
+      {
+        "timestamp": "{{ ansible_date_time.iso8601 }}",
+        "host": "{{ ansible_hostname }}",
+        "ansible_version": "{{ ansible_version.full }}",
+        "ansible_user": "{{ ansible_user_id }}",
+        "message": {
+          "status": "healthy",
+          "jobs": {"no_job_containers": "no_ansible_job_containers_found"}
+        }
+      }
+    dest: /var/log/ansible-eda-monitor.log
+    mode: '0644'
+  delegate_to: localhost
+  become: true
+  when: job_containers | length == 0
