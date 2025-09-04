@@ -1,0 +1,52 @@
+stages:
+  - lint
+  - build
+  - test
+
+variables:
+  IMAGE_NAME: ssh-audit
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+
+image: quay.io/podman/stable:latest
+
+before_script:
+  - apt-get update && apt-get install -y make python3-pip
+  - pip3 install ansible-lint yamllint
+
+lint:
+  stage: lint
+  script:
+    - make lint
+  only:
+    - merge_requests
+    - main
+
+build:
+  stage: build
+  script:
+    - make build
+  only:
+    - merge_requests
+    - main
+
+test:
+  stage: test
+  script:
+    - |
+      # Создаем минимальный тестовый sshd_config
+      cat > test_sshd_config << 'EOF'
+      PermitRootLogin no
+      PasswordAuthentication no
+      MaxAuthTries 5
+      ChallengeResponseAuthentication no
+      X11Forwarding no
+      Port 22
+      EOF
+      
+      # Запускаем контейнер с тестовой конфигурацией
+      podman run --rm \
+        -v $(pwd)/test_sshd_config:/etc/ssh/sshd_config:ro \
+        $(IMAGE_NAME):$(IMAGE_TAG)
+  only:
+    - merge_requests
+    - main
